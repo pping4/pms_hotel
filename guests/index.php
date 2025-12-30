@@ -20,23 +20,13 @@ if (isset($_GET['delete']) && is_numeric($_GET['delete'])) {
     exit;
 }
 
-// Search
-$search = trim($_GET['search'] ?? '');
-$where = '';
-$params = [];
-if (!empty($search)) {
-    $where = "WHERE first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR phone LIKE ?";
-    $searchTerm = "%$search%";
-    $params = [$searchTerm, $searchTerm, $searchTerm, $searchTerm];
-}
-
 // Get all guests
 $sql = "SELECT g.*, 
         (SELECT COUNT(*) FROM bookings WHERE guest_id = g.id) as booking_count,
         (SELECT COUNT(*) FROM contracts WHERE guest_id = g.id) as contract_count
-        FROM guests g $where ORDER BY g.created_at DESC";
+        FROM guests g ORDER BY g.created_at DESC";
 $stmt = $pdo->prepare($sql);
-$stmt->execute($params);
+$stmt->execute();
 $guests = $stmt->fetchAll();
 
 require '../includes/header.php';
@@ -77,32 +67,18 @@ require '../includes/sidebar.php';
     <div class="card">
         <div class="card-header">
             <h2 class="card-title">All Guests (<?php echo count($guests); ?>)</h2>
-            <form method="GET" action="" style="display: flex; gap: 10px;">
-                <input type="text" class="form-control" name="search" 
-                       placeholder="Search by name, email, phone..." 
-                       value="<?php echo htmlspecialchars($search); ?>"
-                       style="max-width: 300px;">
-                <button type="submit" class="btn btn-primary btn-sm">
-                    <i class="fas fa-search"></i>
-                </button>
-                <?php if ($search): ?>
-                    <a href="/pms_hotel/guests/" class="btn btn-secondary btn-sm">
-                        <i class="fas fa-times"></i>
-                    </a>
-                <?php endif; ?>
-            </form>
         </div>
         <div class="table-responsive">
             <table>
                 <thead>
                     <tr>
-                        <th>ID</th>
+                        <th class="no-filter">ID</th>
                         <th>Name</th>
                         <th>Email</th>
                         <th>Phone</th>
                         <th>ID/Passport</th>
                         <th>Bookings</th>
-                        <th>Actions</th>
+                        <th class="no-filter">Actions</th>
                     </tr>
                 </thead>
                 <tbody>

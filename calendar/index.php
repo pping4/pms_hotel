@@ -2,234 +2,161 @@
 require '../includes/auth_check.php';
 require '../config/db.php';
 
-$pageTitle = 'Calendar View';
-
-// Get current month/year from query params or default to current
-$year = isset($_GET['year']) ? (int)$_GET['year'] : (int)date('Y');
-$month = isset($_GET['month']) ? (int)$_GET['month'] : (int)date('m');
-
-// Ensure valid month/year
-if ($month < 1) { $month = 12; $year--; }
-if ($month > 12) { $month = 1; $year++; }
-
-$firstDay = new DateTime("$year-$month-01");
-$lastDay = new DateTime($firstDay->format('Y-m-t'));
-$startDayOfWeek = (int)$firstDay->format('w'); // 0 = Sunday
-$daysInMonth = (int)$firstDay->format('t');
-
-// Get all rooms
-$stmt = $pdo->query("SELECT r.*, rt.name as type_name FROM rooms r LEFT JOIN room_types rt ON r.room_type_id = rt.id ORDER BY r.room_number");
-$rooms = $stmt->fetchAll();
-
-// Get bookings for this month
-$stmt = $pdo->prepare("SELECT b.*, g.first_name, g.last_name 
-                       FROM bookings b 
-                       LEFT JOIN guests g ON b.guest_id = g.id 
-                       WHERE b.status IN ('confirmed', 'checked_in') 
-                       AND b.check_in_date <= ? AND b.check_out_date >= ?");
-$stmt->execute([$lastDay->format('Y-m-d'), $firstDay->format('Y-m-d')]);
-$bookings = $stmt->fetchAll();
-
-// Get contracts for this month
-$stmt = $pdo->prepare("SELECT c.*, g.first_name, g.last_name 
-                       FROM contracts c 
-                       LEFT JOIN guests g ON c.guest_id = g.id 
-                       WHERE c.status = 'active' 
-                       AND c.start_date <= ? AND c.end_date >= ?");
-$stmt->execute([$lastDay->format('Y-m-d'), $firstDay->format('Y-m-d')]);
-$contracts = $stmt->fetchAll();
-
-// Build occupancy map: room_id => array of dates
-$occupancy = [];
-foreach ($bookings as $b) {
-    if (!$b['room_id']) continue;
-    $start = max(new DateTime($b['check_in_date']), $firstDay);
-    $end = min(new DateTime($b['check_out_date']), $lastDay);
-    for ($d = clone $start; $d <= $end; $d->modify('+1 day')) {
-        $occupancy[$b['room_id']][$d->format('Y-m-d')] = [
-            'type' => 'booking',
-            'guest' => $b['first_name'] . ' ' . $b['last_name'],
-            'id' => $b['id']
-        ];
-    }
-}
-
-foreach ($contracts as $c) {
-    if (!$c['room_id']) continue;
-    $start = max(new DateTime($c['start_date']), $firstDay);
-    $end = min(new DateTime($c['end_date']), $lastDay);
-    for ($d = clone $start; $d <= $end; $d->modify('+1 day')) {
-        $occupancy[$c['room_id']][$d->format('Y-m-d')] = [
-            'type' => 'contract',
-            'guest' => $c['first_name'] . ' ' . $c['last_name'],
-            'id' => $c['id']
-        ];
-    }
-}
-
-// Navigation
-$prevMonth = $month - 1;
-$prevYear = $year;
-if ($prevMonth < 1) { $prevMonth = 12; $prevYear--; }
-$nextMonth = $month + 1;
-$nextYear = $year;
-if ($nextMonth > 12) { $nextMonth = 1; $nextYear++; }
-
+$pageTitle = 'Interactive Calendar';
 require '../includes/header.php';
 require '../includes/sidebar.php';
 ?>
 
+<!-- FullCalendar Scheduler CSS -->
+<script src='https://cdn.jsdelivr.net/npm/fullcalendar-scheduler@6.1.10/index.global.min.js'></script>
+<!-- Tippy.js for Tooltips -->
+<script src="https://unpkg.com/@popperjs/core@2"></script>
+<script src="https://unpkg.com/tippy.js@6"></script>
+<link rel="stylesheet" href="https://unpkg.com/tippy.js@6/themes/light.css"/>
 <style>
-.calendar-grid {
-    display: grid;
-    grid-template-columns: 100px repeat(<?php echo $daysInMonth; ?>, minmax(30px, 1fr));
-    gap: 1px;
-    background: var(--border);
-    border-radius: var(--radius);
-    overflow: hidden;
-}
-.calendar-cell {
-    background: white;
-    padding: 8px 4px;
-    text-align: center;
-    font-size: 0.75rem;
-    min-height: 40px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-.calendar-header {
-    background: #f8fafc;
-    font-weight: 600;
-}
-.room-label {
-    background: var(--bg-sidebar);
-    color: white;
-    font-weight: 500;
-    text-align: left;
-    padding-left: 10px;
-}
-.cell-booking {
-    background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
-    color: white;
-    cursor: pointer;
-}
-.cell-contract {
-    background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-    color: white;
-    cursor: pointer;
-}
-.cell-available {
-    background: #f0fdf4;
-}
-.today {
-    border: 2px solid var(--primary);
-}
-.calendar-legend {
-    display: flex;
-    gap: 20px;
-    margin-bottom: 15px;
-}
-.legend-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 0.9rem;
-}
-.legend-box {
-    width: 20px;
-    height: 20px;
-    border-radius: 4px;
-}
+    /* Fix Z-Index issue where tooltip hides behind calendar events */
+    .tippy-box {
+        z-index: 10000 !important;
+    }
+    /* Ensure popper itself is high too since tippy lives inside it */
+    .tippy-popper {
+        z-index: 10000 !important;
+    }
 </style>
 
 <main class="main-content">
     <div class="topbar">
-        <h1><i class="fas fa-calendar-alt"></i> Calendar View</h1>
+        <h1><i class="fas fa-calendar-alt"></i> Interactive Calendar</h1>
         <div class="topbar-right">
-            <a href="/pms_hotel/calendar/?year=<?php echo $prevYear; ?>&month=<?php echo $prevMonth; ?>" class="btn btn-secondary">
-                <i class="fas fa-chevron-left"></i>
-            </a>
-            <span style="padding: 10px 20px; font-weight: 600; font-size: 1.1rem;">
-                <?php echo date('F Y', strtotime("$year-$month-01")); ?>
-            </span>
-            <a href="/pms_hotel/calendar/?year=<?php echo $nextYear; ?>&month=<?php echo $nextMonth; ?>" class="btn btn-secondary">
-                <i class="fas fa-chevron-right"></i>
-            </a>
-            <a href="/pms_hotel/calendar/" class="btn btn-primary">Today</a>
-        </div>
-    </div>
-
-    <div class="calendar-legend">
-        <div class="legend-item">
-            <div class="legend-box" style="background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);"></div>
-            <span>Booking</span>
-        </div>
-        <div class="legend-item">
-            <div class="legend-box" style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);"></div>
-            <span>Contract</span>
-        </div>
-        <div class="legend-item">
-            <div class="legend-box" style="background: #f0fdf4; border: 1px solid #dcfce7;"></div>
-            <span>Available</span>
-        </div>
-    </div>
-
-    <div class="card" style="padding: 0; overflow-x: auto;">
-        <div class="calendar-grid">
-            <!-- Header Row: Days -->
-            <div class="calendar-cell calendar-header">Room</div>
-            <?php for ($d = 1; $d <= $daysInMonth; $d++): 
-                $date = new DateTime("$year-$month-$d");
-                $isToday = $date->format('Y-m-d') === date('Y-m-d');
-                $dayName = $date->format('D');
-            ?>
-                <div class="calendar-cell calendar-header <?php echo $isToday ? 'today' : ''; ?>">
-                    <?php echo $d; ?><br>
-                    <small style="color: var(--text-muted);"><?php echo $dayName; ?></small>
+             <div class="calendar-legend" style="display:flex; gap:15px; align-items:center;">
+                <div style="display:flex; align-items:center; gap:5px;">
+                    <span style="width:15px; height:15px; background:#22c55e; border-radius:3px;"></span> Booking
                 </div>
-            <?php endfor; ?>
-
-            <!-- Room Rows -->
-            <?php foreach ($rooms as $room): ?>
-                <div class="calendar-cell room-label">
-                    <?php echo htmlspecialchars($room['room_number']); ?>
+                <div style="display:flex; align-items:center; gap:5px;">
+                    <span style="width:15px; height:15px; background:#f59e0b; border-radius:3px;"></span> Contract
                 </div>
-                <?php for ($d = 1; $d <= $daysInMonth; $d++): 
-                    $dateStr = sprintf('%04d-%02d-%02d', $year, $month, $d);
-                    $isToday = $dateStr === date('Y-m-d');
-                    $occ = $occupancy[$room['id']][$dateStr] ?? null;
-                    
-                    if ($occ) {
-                        $cellClass = $occ['type'] === 'booking' ? 'cell-booking' : 'cell-contract';
-                        $link = $occ['type'] === 'booking' 
-                            ? "/pms_hotel/bookings/view.php?id={$occ['id']}"
-                            : "/pms_hotel/contracts/view.php?id={$occ['id']}";
-                        $title = $occ['guest'];
-                    } else {
-                        $cellClass = 'cell-available';
-                        $link = '';
-                        $title = '';
-                    }
-                ?>
-                    <div class="calendar-cell <?php echo $cellClass; ?> <?php echo $isToday ? 'today' : ''; ?>"
-                         title="<?php echo htmlspecialchars($title); ?>"
-                         <?php if ($link): ?>onclick="window.location='<?php echo $link; ?>'"<?php endif; ?>>
-                        <?php if ($occ): ?>
-                            <i class="fas fa-<?php echo $occ['type'] === 'booking' ? 'user' : 'file-contract'; ?>" style="font-size: 0.7rem;"></i>
-                        <?php endif; ?>
-                    </div>
-                <?php endfor; ?>
-            <?php endforeach; ?>
+            </div>
         </div>
     </div>
 
-    <?php if (count($rooms) == 0): ?>
-        <div class="alert alert-danger" style="margin-top: 20px;">
-            <i class="fas fa-exclamation-triangle"></i>
-            No rooms found. Please <a href="/pms_hotel/rooms/create.php">add rooms</a> first.
-        </div>
-    <?php endif; ?>
+    <div class="card" style="padding: 20px;">
+        <div id='calendar'></div>
+    </div>
 </main>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        var calendarEl = document.getElementById('calendar');
+        var calendar = new FullCalendar.Calendar(calendarEl, {
+            schedulerLicenseKey: 'CC-BY-NC-4.0', // Non-Commercial License
+            initialView: 'resourceTimelineMonth', // Default View
+            headerToolbar: {
+                left: 'prev,next today',
+                center: 'title',
+                right: 'resourceTimelineMonth,dayGridMonth,listWeek'
+            },
+            views: {
+                resourceTimelineMonth: {
+                    buttonText: 'Room View',
+                    resourceAreaWidth: '15%',
+                    slotLabelFormat: [
+                        { day: 'numeric', weekday: 'short' } // Compact time header
+                    ]
+                }
+            },
+            editable: true, 
+            droppable: true,
+            resourceAreaHeaderContent: 'Rooms',
+            resources: '/pms_hotel/api/resources.php', // Load Rooms
+            events: '/pms_hotel/api/events.php', // Load Events matches to resourceId
+            
+            // Tooltip on Hover
+            eventMouseEnter: function(info) {
+                var props = info.event.extendedProps;
+                var content = '';
+                
+                if (props.type === 'booking') {
+                    content = `
+                        <div style="text-align:left; min-width:200px;">
+                            <strong style="font-size:1.1em; color:#22c55e;">${props.guest}</strong><br>
+                            <hr style="margin:5px 0; border-color:#eee;">
+                            <i class="fas fa-bed"></i> Room: <b>${props.room}</b><br>
+                            <i class="fas fa-calendar"></i> In: ${info.event.start.toLocaleDateString()}<br>
+                            <i class="fas fa-calendar"></i> Out: ${info.event.end ? info.event.end.toLocaleDateString() : '?'}<br>
+                            <i class="fas fa-tag"></i> Price: ${props.price} ฿<br>
+                            <i class="fas fa-info-circle"></i> Status: ${props.status}<br>
+                            <i class="fas fa-phone"></i> ${props.phone || '-'}
+                        </div>
+                    `;
+                } else {
+                    content = `
+                        <div style="text-align:left; min-width:200px;">
+                            <strong style="font-size:1.1em; color:#f59e0b;">Contract: ${props.guest}</strong><br>
+                            <hr style="margin:5px 0; border-color:#eee;">
+                            <i class="fas fa-bed"></i> Room: <b>${props.room}</b><br>
+                            <i class="fas fa-calendar"></i> Start: ${info.event.start.toLocaleDateString()}<br>
+                            <i class="fas fa-calendar"></i> End: ${info.event.end ? info.event.end.toLocaleDateString() : '?'}<br>
+                            <i class="fas fa-tag"></i> Total: ${props.price} ฿<br>
+                            <p style="margin-top:5px; font-style:italic; font-size:0.9em;">${props.desc || ''}</p>
+                        </div>
+                    `;
+                }
+
+                tippy(info.el, {
+                    content: content,
+                    allowHTML: true,
+                    theme: 'light',
+                    placement: 'top',
+                    interactive: true,
+                    appendTo: document.body, // Force append to body to avoid clipping
+                });
+            },
+
+            // Handle Drop (Move)
+            eventDrop: function(info) {
+                if (!confirm("Confirm move " + info.event.extendedProps.type + " to " + info.event.start.toLocaleDateString() + "?")) {
+                    info.revert();
+                    return;
+                }
+                updateEvent(info.event);
+            },
+
+            // Handle Resize
+            eventResize: function(info) {
+                if (!confirm("Confirm change end date?")) {
+                    info.revert();
+                    return;
+                }
+                updateEvent(info.event);
+            }
+        });
+        calendar.render();
+
+        function updateEvent(event) {
+            var data = {
+                id: event.id,
+                start: event.startStr,
+                end: event.endStr || event.startStr 
+            };
+
+            fetch('/pms_hotel/api/update_event.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data),
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (!data.success) {
+                    alert('Update failed');
+                    event.revert();
+                }
+            })
+            .catch((error) => {
+                alert('Network error');
+                event.revert();
+            });
+        }
+    });
+</script>
 
 <?php require '../includes/footer.php'; ?>

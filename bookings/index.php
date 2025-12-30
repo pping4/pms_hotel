@@ -130,14 +130,14 @@ require '../includes/sidebar.php';
             <table>
                 <thead>
                     <tr>
-                        <th>ID</th>
+                        <th class="no-filter">ID</th>
                         <th>Guest</th>
                         <th>Room</th>
                         <th>Check-in</th>
                         <th>Check-out</th>
                         <th>Total</th>
                         <th>Status</th>
-                        <th>Actions</th>
+                        <th class="no-filter">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
